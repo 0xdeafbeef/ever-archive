@@ -5,20 +5,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use archive_downloader::ArchiveDownloaderConfig;
 use archive_uploader::{ArchiveUploaderConfig, AwsCredentials};
 use everscale_types::models as ton_block;
+use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 use tokio::sync::{Barrier, Semaphore};
 
-use ever_archive::*;
 use ever_archive::utils::*;
+use ever_archive::*;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
-
 
 fn main() {
     if let Err(e) = argh::from_env::<App>().run() {
@@ -40,6 +41,7 @@ impl App {
             Subcommand::Check(cmd) => cmd.run(),
             Subcommand::List(cmd) => cmd.run(),
             Subcommand::Upload(cmd) => cmd.run(),
+            Subcommand::Download(cmd) => cmd.run(),
         }
     }
 }
@@ -71,6 +73,7 @@ enum Subcommand {
     Check(CmdCheck),
     List(CmdList),
     Upload(CmdUpload),
+    Download(CmdDownload),
 }
 
 /// Verifies the archive
@@ -167,15 +170,16 @@ impl CmdCheck {
 
             let mut shards = SeqNoMap::new();
             shards.insert(id.shard, *id);
-            custom.shards.iter()
-                .filter_map(|x|
-                    match x {
-                        Ok(t) => { Some((t.0, t.1)) }
-                        Err(e) => {
-                            eprintln!("Invalid shard description in mc block {id}: {e}");
-                            None
-                        }
-                    })
+            custom
+                .shards
+                .iter()
+                .filter_map(|x| match x {
+                    Ok(t) => Some((t.0, t.1)),
+                    Err(e) => {
+                        eprintln!("Invalid shard description in mc block {id}: {e}");
+                        None
+                    }
+                })
                 .for_each(|(ident, descr)| {
                     shards.insert(
                         ident,
@@ -210,7 +214,6 @@ impl CmdCheck {
             let info = block
                 .load_info()
                 .with_context(|| format!("Invalid block data ({id})"))?;
-
 
             if info.key_block {
                 key_blocks.ids.insert(id);
@@ -248,12 +251,15 @@ impl CmdCheck {
 }
 
 fn init_archive_walker(path: PathBuf) -> (Vec<PathBuf>, ProgressBar) {
-    let mut files: Vec<_> = walkdir::WalkDir::new(path).into_iter().filter_map(|x| x.ok())
-        .filter(|x| x.file_type().is_file()).map(|x| x.into_path()).
-        filter(|x| if let Some(ext) = x.extension() {
-            ext == "pack"
-        } else { false }
-        ).collect();
+    let mut files: Vec<_> = walkdir::WalkDir::new(path)
+        .into_iter()
+        .filter_map(|x| x.ok())
+        .filter(|x| x.file_type().is_file())
+        .map(|x| x.into_path())
+        .filter(|x| {
+            x.is_file()
+        })
+        .collect();
 
     files.sort();
 
@@ -357,9 +363,10 @@ impl CmdUpload {
             archives_search_interval_sec: 600,
             retry_interval_ms: 100,
             credentials: Some(creds),
-
         };
-        let s3_client = runner.block_on(archive_uploader::ArchiveUploader::new(config)).context("Failed to create s3 client")?;
+        let s3_client = runner
+            .block_on(archive_uploader::ArchiveUploader::new(config))
+            .context("Failed to create s3 client")?;
 
         let (files, pg) = init_archive_walker(self.path);
         let semaphore = Arc::new(Semaphore::new(128));
@@ -414,6 +421,72 @@ impl CmdUpload {
     }
 }
 
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "download")]
+/// Uploads archive to the cloud storage
+struct CmdDownload {
+    #[argh(option, short = 'p')]
+    /// path to the archive root directory
+    path: PathBuf,
+
+    /// name of the endpoint (e.g. `"eu-east-2"`)
+    #[argh(option)]
+    pub name: String,
+
+    /// endpoint to be used. For instance, `"https://s3.my-provider.net"` or just
+    /// `"s3.my-provider.net"` (default scheme is https).
+    #[argh(option)]
+    pub endpoint: String,
+
+    /// bucket name
+    #[argh(option)]
+    pub bucket: String,
+
+    /// aws access key ID
+    #[argh(option)]
+    pub access_key: String,
+
+    /// aws secret access key
+    #[argh(option)]
+    pub secret_key: String,
+}
+
+impl CmdDownload {
+    fn run(self) -> Result<()> {
+        let runner = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?;
+
+        let creds = archive_downloader::AwsCredentials {
+            access_key: self.access_key,
+            secret_key: self.secret_key,
+            token: None,
+        };
+        let config = ArchiveDownloaderConfig {
+            name: self.name,
+            endpoint: self.endpoint,
+            bucket: self.bucket,
+            retry_interval_ms: 100,
+            retry_count: 1,
+            credentials: Some(creds),
+        };
+        let s3_client = runner.block_on(archive_downloader::ArchiveDownloader::new(config))?;
+
+        let mut stream = s3_client.archives_stream();
+        runner.block_on(async {
+            while let Some(Ok((name, data))) = stream.next().await {
+                let folder_name = &name[..4];
+                let file_name = &name[4..];
+                std::fs::create_dir_all(self.path.join(folder_name)).unwrap();
+                std::fs::write(self.path.join(folder_name).join(file_name), data).unwrap();
+                println!("Saved {}", name);
+            }
+        });
+
+        Ok(())
+    }
+}
 
 enum RawArchive {
     Bytes(Vec<u8>),

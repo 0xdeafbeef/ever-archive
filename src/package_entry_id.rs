@@ -1,7 +1,7 @@
+use everscale_types::models as ton_block;
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::str::FromStr;
-use everscale_types::models as ton_block;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub enum PackageEntryId<I> {
@@ -29,8 +29,8 @@ impl PackageEntryId<ton_block::BlockId> {
 }
 
 impl<I> PackageEntryId<I>
-    where
-        I: Borrow<ton_block::BlockId> + Hash,
+where
+    I: Borrow<ton_block::BlockId> + Hash,
 {
     fn filename_prefix(&self) -> &'static str {
         match self {
@@ -59,8 +59,8 @@ impl GetFileName for ton_block::BlockId {
 }
 
 impl<I> GetFileName for PackageEntryId<I>
-    where
-        I: Borrow<ton_block::BlockId> + Hash,
+where
+    I: Borrow<ton_block::BlockId> + Hash,
 {
     fn filename(&self) -> String {
         match self {
@@ -107,16 +107,12 @@ fn parse_block_id(filename: &str) -> Result<ton_block::BlockId, PackageEntryIdEr
         .ok_or(PackageEntryIdError::InvalidShardPrefix)?;
 
     let root_hash = match parts.next() {
-        Some(part) => {
-            hex::decode(part).map_err(|_| PackageEntryIdError::InvalidRootHash)?
-        }
+        Some(part) => hex::decode(part).map_err(|_| PackageEntryIdError::InvalidRootHash)?,
         None => return Err(PackageEntryIdError::RootHashNotFound),
     };
 
     let file_hash = match parts.next() {
-        Some(part) => {
-            hex::decode(part).map_err(|_| PackageEntryIdError::InvalidFileHash)?
-        }
+        Some(part) => hex::decode(part).map_err(|_| PackageEntryIdError::InvalidFileHash)?,
         None => return Err(PackageEntryIdError::FileHashNotFound),
     };
 

@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
 use everscale_types::cell::Load;
 use sha2::Digest;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::archive_package::*;
 use crate::package_entry_id::*;
@@ -31,7 +31,8 @@ impl<'a> ArchiveData<'a> {
                         .entry(id)
                         .or_insert_with(ArchiveDataEntry::default)
                         .block = Some((block, entry.data));
-                    if id.shard.workchain() == -1 { // todo: add is_masterchain() method
+                    if id.shard.workchain() == -1 {
+                        // todo: add is_masterchain() method
                         res.mc_block_ids.insert(id.seqno, id);
                     }
                 }
@@ -64,7 +65,7 @@ impl<'a> ArchiveData<'a> {
     }
 
     pub fn highest_mc_id(&self) -> Option<&ton_block::BlockId> {
-        self.mc_block_ids.values().rev().next()
+        self.mc_block_ids.values().next_back()
     }
 
     pub fn check(&self) -> Result<(), ArchiveDataError> {
@@ -148,7 +149,7 @@ impl ArchiveDataEntry<'_> {
 
 pub fn deserialize_block(
     id: &ton_block::BlockId,
-     data: &[u8],
+    data: &[u8],
 ) -> Result<ton_block::Block, ArchiveDataError> {
     let file_hash = sha2::Sha256::digest(data);
     if id.file_hash.as_slice() != file_hash.as_slice() {
@@ -167,11 +168,13 @@ pub fn deserialize_block(
 
 pub fn deserialize_block_proof(
     block_id: &everscale_types::models::BlockId,
-     data: &[u8],
+    data: &[u8],
     is_link: bool,
 ) -> Result<ton_block::BlockProof, ArchiveDataError> {
-    let root = everscale_types::boc::Boc::decode(data).map_err(|_| ArchiveDataError::InvalidBlockProof)?;
-    let proof = everscale_types::models::BlockProof::load_from(&mut root.as_slice()).map_err(|_| ArchiveDataError::InvalidBlockProof)?;
+    let root =
+        everscale_types::boc::Boc::decode(data).map_err(|_| ArchiveDataError::InvalidBlockProof)?;
+    let proof = everscale_types::models::BlockProof::load_from(&mut root.as_slice())
+        .map_err(|_| ArchiveDataError::InvalidBlockProof)?;
 
     if &proof.proof_for != block_id {
         return Err(ArchiveDataError::ProofForAnotherBlock);
