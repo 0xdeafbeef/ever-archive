@@ -94,9 +94,23 @@ impl CmdCheck {
         match self.path {
             Some(path) if path.is_dir() => {
                 let (files, pg) = init_archive_walker(path);
-                for path in files {
-                    Self::check_archive(Some(path), self.show_features)?;
-                    pg.inc(1);
+                for path in files.chunks(4) {
+                    std::thread::scope(|s| {
+                        for path in path {
+                            s.spawn(|| {
+                                if let Err(e) =
+                                    Self::check_archive(Some(path.clone()), self.show_features)
+                                {
+                                    pg.println(format!(
+                                        "Failed to check archive {}: {:?}",
+                                        path.display(),
+                                        e
+                                    ));
+                                }
+                                pg.inc(1);
+                            });
+                        }
+                    });
                 }
                 Ok(())
             }
@@ -256,9 +270,7 @@ fn init_archive_walker(path: PathBuf) -> (Vec<PathBuf>, ProgressBar) {
         .filter_map(|x| x.ok())
         .filter(|x| x.file_type().is_file())
         .map(|x| x.into_path())
-        .filter(|x| {
-            x.is_file()
-        })
+        .filter(|x| x.is_file())
         .collect();
 
     files.sort();
